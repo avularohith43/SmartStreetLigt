@@ -1,228 +1,238 @@
-# =============================================================
-# Smart Street Light System - Flask backend
-# =============================================================
-# This file has TWO separate parts:
-#   PART 1: Sensor functions (simulated now, real Raspberry Pi later)
-#   PART 2: Application logic + Flask API (does not change later)
-#
-# Later, only PART 1 needs to be replaced with real hardware code.
-# =============================================================
-
 from flask import Flask, jsonify, request, render_template
 from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
 
+# ============================================================
+# SENSOR DATA
+# ============================================================
 
-# =============================================================
-# PART 1: SENSOR LAYER (SIMULATED)
-# =============================================================
-# These variables pretend to be the sensors.
-# The dashboard's "Simulation / Testing Controls" change them.
-
-simulated_sensors = {
-    "light_condition": "DAY",   # "DAY" or "NIGHT"  (LDR sensor later)
-    "motion_detected": False,   # True or False     (PIR sensor later)
+sensor_data = {
+    "ldr": 1,
+    "pir": 0
 }
 
-
-def read_light_condition():
-    """Return 'DAY' or 'NIGHT'. Later: read the real LDR sensor here."""
-    return simulated_sensors["light_condition"]
-
-
-def read_motion_detected():
-    """Return True/False. Later: read the real PIR sensor here."""
-    return simulated_sensors["motion_detected"]
-
-
-def write_street_light(is_on):
-    """Switch the street light. Later: turn the real LED on/off here.
-    For now it does nothing, because the light is only shown on screen."""
-    pass
-
-
-def set_simulated_light_condition(value):
-    """Used only by the simulation controls. Remove when using real hardware."""
-    simulated_sensors["light_condition"] = value
-
-
-def set_simulated_motion(value):
-    """Used only by the simulation controls. Remove when using real hardware."""
-    simulated_sensors["motion_detected"] = value
-
-
-# =============================================================
-# PART 2: APPLICATION LOGIC
-# =============================================================
-
-# The state of the system (kept in memory, no database)
 system_state = {
     "light_condition": "DAY",
     "motion_detected": False,
-    "street_light": "OFF",   # "ON" or "OFF"
-    "mode": "AUTO",          # "AUTO" or "MANUAL"
+    "street_light": "OFF",
+    "mode": "AUTO"
 }
 
 
+# ============================================================
+# STREET LIGHT LOGIC
+# ============================================================
+
 def update_system():
-    """Read the sensors and update the street light.
-
-    AUTO mode rules:
-        DAY                  -> light OFF
-        NIGHT + NO MOTION    -> light OFF
-        NIGHT + MOTION       -> light ON
-
-    MANUAL mode: the light is not changed here. Only the
-    LIGHT ON / LIGHT OFF buttons change it.
     """
-    # Always read the latest sensor values
-    system_state["light_condition"] = read_light_condition()
-    system_state["motion_detected"] = read_motion_detected()
+    Automatic street-light logic:
 
-    # Only apply the automatic rules in AUTO mode
+    DAY + any motion      -> OFF
+    NIGHT + no motion     -> OFF
+    NIGHT + motion        -> ON
+    """
+
+    if sensor_data["ldr"] == 0:
+        system_state["light_condition"] = "NIGHT"
+    else:
+        system_state["light_condition"] = "DAY"
+
+    system_state["motion_detected"] = sensor_data["pir"] == 1
+
     if system_state["mode"] == "AUTO":
-        if system_state["light_condition"] == "NIGHT" and system_state["motion_detected"]:
+        if (
+            system_state["light_condition"] == "NIGHT"
+            and system_state["motion_detected"]
+        ):
             system_state["street_light"] = "ON"
         else:
             system_state["street_light"] = "OFF"
 
-    # Send the result to the (future) real light
-    write_street_light(system_state["street_light"] == "ON")
-
 
 def get_status():
-    """Update everything and return the current status as a dictionary."""
     update_system()
+
     return {
         "light_condition": system_state["light_condition"],
         "motion_detected": system_state["motion_detected"],
         "street_light": system_state["street_light"],
         "mode": system_state["mode"],
+        "ldr": sensor_data["ldr"],
+        "pir": sensor_data["pir"]
     }
 
 
-def success_response(message):
-    """Standard JSON reply for a successful POST request."""
-    return jsonify({"success": True, "message": message, "status": get_status()})
-
-
-def error_response(message, code=400):
-    """Standard JSON reply when something is wrong."""
-    return jsonify({"success": False, "error": message}), code
-
-
-def get_json_data():
-    """Read the JSON body of a request. Returns None if it is missing/invalid."""
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return None
-    return data
-
-
-# =============================================================
-# ROUTES (API)
-# =============================================================
+# ============================================================
+# DASHBOARD
+# ============================================================
 
 @app.route("/")
 def home():
-    """Show the dashboard page."""
     return render_template("index.html")
 
 
+# ============================================================
+# STATUS API
+# ============================================================
+
 @app.route("/api/status", methods=["GET"])
 def api_status():
-    """Return the current status."""
     return jsonify(get_status())
 
 
-@app.route("/api/simulation/light", methods=["POST"])
-def api_simulation_light():
-    """Change simulated light condition. Body: {"light_condition": "DAY"} or "NIGHT"."""
-    data = get_json_data()
-    if data is None:
-        return error_response("Request body must be valid JSON.")
+# ============================================================
+# RASPBERRY PI SENSOR API
+# ============================================================
 
-    value = data.get("light_condition")
-    if not isinstance(value, str) or value.upper() not in ("DAY", "NIGHT"):
-        return error_response("light_condition must be 'DAY' or 'NIGHT'.")
+@app.route("/api/sensor", methods=["POST"])
+def receive_sensor_data():
 
-    set_simulated_light_condition(value.upper())
-    return success_response("Simulated light condition set to " + value.upper() + ".")
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({
+            "success": False,
+            "error": "JSON data required"
+        }), 400
+
+    ldr = data.get("ldr")
+    pir = data.get("pir")
+
+    if ldr not in (0, 1):
+        return jsonify({
+            "success": False,
+            "error": "ldr must be 0 or 1"
+        }), 400
+
+    if pir not in (0, 1):
+        return jsonify({
+            "success": False,
+            "error": "pir must be 0 or 1"
+        }), 400
+
+    sensor_data["ldr"] = ldr
+    sensor_data["pir"] = pir
+
+    update_system()
+
+    return jsonify({
+        "success": True,
+        "message": "Sensor data received",
+        "ldr": sensor_data["ldr"],
+        "pir": sensor_data["pir"],
+        "light_condition": system_state["light_condition"],
+        "motion_detected": system_state["motion_detected"],
+        "street_light": system_state["street_light"],
+        "mode": system_state["mode"]
+    })
 
 
-@app.route("/api/simulation/motion", methods=["POST"])
-def api_simulation_motion():
-    """Change simulated motion. Body: {"motion_detected": true} or false."""
-    data = get_json_data()
-    if data is None:
-        return error_response("Request body must be valid JSON.")
-
-    value = data.get("motion_detected")
-    if not isinstance(value, bool):
-        return error_response("motion_detected must be true or false.")
-
-    set_simulated_motion(value)
-    if value:
-        return success_response("Simulated motion: MOTION DETECTED.")
-    return success_response("Simulated motion: NO MOTION.")
-
+# ============================================================
+# MODE API
+# ============================================================
 
 @app.route("/api/mode", methods=["POST"])
 def api_mode():
-    """Switch between AUTO and MANUAL. Body: {"mode": "AUTO"} or "MANUAL"."""
-    data = get_json_data()
-    if data is None:
-        return error_response("Request body must be valid JSON.")
 
-    value = data.get("mode")
-    if not isinstance(value, str) or value.upper() not in ("AUTO", "MANUAL"):
-        return error_response("mode must be 'AUTO' or 'MANUAL'.")
+    data = request.get_json(silent=True)
 
-    system_state["mode"] = value.upper()
-    return success_response("Operating mode set to " + value.upper() + ".")
+    if not isinstance(data, dict):
+        return jsonify({
+            "success": False,
+            "error": "JSON data required"
+        }), 400
 
+    mode = data.get("mode")
+
+    if mode not in ("AUTO", "MANUAL"):
+        return jsonify({
+            "success": False,
+            "error": "Mode must be AUTO or MANUAL"
+        }), 400
+
+    system_state["mode"] = mode
+
+    update_system()
+
+    return jsonify({
+        "success": True,
+        "message": "Mode changed",
+        "status": get_status()
+    })
+
+
+# ============================================================
+# MANUAL LIGHT ON
+# ============================================================
 
 @app.route("/api/light/on", methods=["POST"])
-def api_light_on():
-    """Turn the street light ON (manual mode only)."""
+def light_on():
+
     if system_state["mode"] != "MANUAL":
-        return error_response("Switch to MANUAL mode first.", 409)
+        return jsonify({
+            "success": False,
+            "error": "Switch to MANUAL mode first"
+        }), 409
 
     system_state["street_light"] = "ON"
-    return success_response("Street light turned ON manually.")
 
+    return jsonify({
+        "success": True,
+        "message": "Street light turned ON",
+        "status": get_status()
+    })
+
+
+# ============================================================
+# MANUAL LIGHT OFF
+# ============================================================
 
 @app.route("/api/light/off", methods=["POST"])
-def api_light_off():
-    """Turn the street light OFF (manual mode only)."""
+def light_off():
+
     if system_state["mode"] != "MANUAL":
-        return error_response("Switch to MANUAL mode first.", 409)
+        return jsonify({
+            "success": False,
+            "error": "Switch to MANUAL mode first"
+        }), 409
 
     system_state["street_light"] = "OFF"
-    return success_response("Street light turned OFF manually.")
+
+    return jsonify({
+        "success": True,
+        "message": "Street light turned OFF",
+        "status": get_status()
+    })
 
 
-# =============================================================
-# ERROR HANDLERS (always reply with JSON, never crash)
-# =============================================================
+# ============================================================
+# ERROR HANDLERS
+# ============================================================
 
 @app.errorhandler(HTTPException)
 def handle_http_error(error):
-    """Handles 404 (not found), 405 (wrong method), etc."""
-    return jsonify({"success": False, "error": error.description}), error.code
+
+    return jsonify({
+        "success": False,
+        "error": error.description
+    }), error.code
 
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(error):
-    """Handles any unexpected error so the server keeps running."""
-    return jsonify({"success": False, "error": "Internal server error."}), 500
+
+    print("ERROR:", error)
+
+    return jsonify({
+        "success": False,
+        "error": "Internal server error"
+    }), 500
 
 
-# =============================================================
-# START THE SERVER
-# =============================================================
+# ============================================================
+# START SERVER
+# ============================================================
 
 if __name__ == "__main__":
-    update_system()
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
